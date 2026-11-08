@@ -15,13 +15,13 @@ func CheckChangedPaths(changed []string, skill string) error {
 	var rejected []string
 	for _, p := range changed {
 		c := path.Clean(p)
-		if c == allowedNotes || (strings.HasPrefix(c, allowedDir) && c != allowedDir) {
+		if c == allowedNotes || strings.HasPrefix(c, allowedDir) {
 			continue
 		}
 		rejected = append(rejected, p)
 	}
 	if len(rejected) > 0 {
-		return fmt.Errorf("Claude Code changed paths that are not allowed: %s", strings.Join(rejected, ", "))
+		return fmt.Errorf("claude changed files outside the allowed paths: %s", strings.Join(rejected, ", "))
 	}
 	return nil
 }

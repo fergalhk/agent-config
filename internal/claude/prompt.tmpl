@@ -24,21 +24,21 @@ Use this order when two sources disagree.
 
 A human comment ranks above the notes file.
 The notes file ranks above the upstream change.
-{{- if .HasPR}}
-Read the human activity file before you start.
-{{- end}}
 
 ## Steps
 
 1. Read the notes file first.
-   Follow every instruction in it.
+{{- if .HasPR}}
+   Then read the human activity file.
+{{- end}}
+   Follow the notes file, unless a human comment disagrees.
 2. Apply the upstream change to the fork.
    Keep every deliberate difference between the fork and the old upstream version.
    Remove a difference only when the notes file or a human comment tells you to.
 3. Update the notes file when a human comment shows a preference that applies again.
    Write the preference as a short, plain statement.
    If the fork changed, append one line to the section "History of decisions".
-   Put the date and {{.NewSHA}} in that line.
+   Use this form: `- {{.Date}} upstream {{.NewSHA}}: <what you decided>`
    Keep the notes file short.
 4. Write the result file at {{.ResultPath}}.
    Line 1 is the pull request title.

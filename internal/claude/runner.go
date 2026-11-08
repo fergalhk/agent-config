@@ -42,7 +42,10 @@ func (r Runner) Run(ctx context.Context, repoDir, scratchDir, prompt string) err
 
 	if err := cmd.Run(); err != nil {
 		if errors.Is(err, exec.ErrNotFound) {
-			return fmt.Errorf("Claude Code binary %q not found: %w", r.Bin, err)
+			return fmt.Errorf("claude binary %q not found: %w", r.Bin, err)
+		}
+		if r.Timeout > 0 && errors.Is(ctx.Err(), context.DeadlineExceeded) {
+			return fmt.Errorf("claude run exceeded the timeout of %s", r.Timeout)
 		}
 		return fmt.Errorf("run %s: %w", r.Bin, err)
 	}

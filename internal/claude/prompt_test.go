@@ -20,6 +20,7 @@ func data() PromptData {
 		ResultPath:   "/scratch/result.md",
 		OldSHA:       "1111111111111111111111111111111111111111",
 		NewSHA:       "2222222222222222222222222222222222222222",
+		Date:         "2026-11-08",
 	}
 }
 
@@ -30,7 +31,7 @@ func TestBuildPrompt_ContainsPathsAndRules(t *testing.T) {
 		t.Fatal(err)
 	}
 	for _, want := range []string{
-		d.ForkDir, d.NotesPath, d.ResultPath, d.OldSHA, d.NewSHA,
+		d.ForkDir, d.NotesPath, d.ResultPath, d.OldSHA, d.NewSHA, d.Date,
 		"Read the notes file first.",
 		"A human comment ranks above the notes file.",
 		"Do not edit any file outside the fork directory, the notes file and the result file.",

@@ -29,6 +29,8 @@ type PromptData struct {
 	OldSHA       string
 	NewSHA       string
 	HasPR        bool
+	// Date is today's date in the form YYYY-MM-DD.
+	Date string
 }
 
 // BuildPrompt fills the embedded template with the given data.
