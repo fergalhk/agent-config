@@ -94,19 +94,29 @@ func cloneSource(ctx context.Context, scratch string, i int, src config.ForkSour
 }
 
 // addCandidate raises the PR for one new skill. It returns a short outcome for the log.
+// Each add branch changes skills.yaml. So after one discovery PR merges, the
+// other open discovery PRs conflict. When the branch of an open PR is behind
+// main, addCandidate builds the branch again from main and pushes it with
+// force. It does not change the title or the body of that PR.
 func addCandidate(ctx context.Context, d Deps, upstream *gitx.Repo, ref string, src config.ForkSource, c Candidate) (string, error) {
 	branch := naming.AddBranch(c.Name)
 	prs, err := d.API.FindPRs(ctx, branch)
 	if err != nil {
 		return "", fmt.Errorf("find PRs for %s: %w", branch, err)
 	}
-	for _, pr := range prs {
-		if pr.State == "open" {
-			return fmt.Sprintf("skipped, PR #%d is open", pr.Number), nil
+	behindBy := 0
+	if OpenPR(prs) != nil {
+		behindBy, err = d.API.CompareBehindBy(ctx, baseBranch, branch)
+		if err != nil {
+			return "", fmt.Errorf("compare %s with %s: %w", branch, baseBranch, err)
 		}
-		if !pr.Merged {
-			return fmt.Sprintf("skipped, PR #%d is closed", pr.Number), nil
-		}
+	}
+	action, existing := DecideAdd(prs, behindBy)
+	switch action {
+	case AddSkipOpen:
+		return fmt.Sprintf("skipped, PR #%d is open", existing.Number), nil
+	case AddSkipClosed:
+		return fmt.Sprintf("skipped, PR #%d is closed", existing.Number), nil
 	}
 
 	sha, err := upstream.LastCommitTouching(ctx, ref, c.Dir)
@@ -148,8 +158,12 @@ func addCandidate(ctx context.Context, d Deps, upstream *gitx.Repo, ref string, 
 		return "", err
 	}
 	// Force the push. A branch with no open or closed unmerged PR may still exist from an earlier PR.
+	// A rebuilt branch also replaces the old branch.
 	if err := d.Repo.Push(ctx, branch, true); err != nil {
 		return "", err
+	}
+	if action == AddRebuild {
+		return fmt.Sprintf("rebuilt the branch of PR #%d from %s", existing.Number, baseBranch), nil
 	}
 	body, err := PRBody(c.Name, source, sha, path.Base(c.Dir))
 	if err != nil {

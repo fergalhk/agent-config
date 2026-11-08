@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"io/fs"
+	"log"
 	"os"
 	"path"
 	"path/filepath"
@@ -18,6 +19,7 @@ import (
 	"gopkg.in/yaml.v3"
 
 	"github.com/fergalhk/agent-config/internal/config"
+	"github.com/fergalhk/agent-config/internal/github"
 	"github.com/fergalhk/agent-config/internal/naming"
 )
 
@@ -41,7 +43,8 @@ type Candidate struct {
 }
 
 // ListCandidates returns the immediate child directories of the source directory
-// that contain SKILL.md. The result is sorted by name.
+// that contain SKILL.md. It skips a directory with an invalid local name.
+// The result is sorted by name.
 func ListCandidates(upstreamRoot string, src config.ForkSource) ([]Candidate, error) {
 	base := strings.Trim(src.Source.Directory, "/")
 	entries, err := os.ReadDir(filepath.Join(upstreamRoot, filepath.FromSlash(base)))
@@ -61,7 +64,12 @@ func ListCandidates(upstreamRoot string, src config.ForkSource) ([]Candidate, er
 		if err != nil {
 			return nil, fmt.Errorf("check %s/SKILL.md: %w", dir, err)
 		}
-		cands = append(cands, Candidate{Dir: dir, Name: naming.LocalName(src.Prefix, dir)})
+		name := naming.LocalName(src.Prefix, dir)
+		if !naming.ValidName(name) {
+			log.Printf("skip %s: %q is not a valid skill name", dir, name)
+			continue
+		}
+		cands = append(cands, Candidate{Dir: dir, Name: name})
 	}
 	sort.Slice(cands, func(i, j int) bool { return cands[i].Name < cands[j].Name })
 	return cands, nil
@@ -81,6 +89,49 @@ func NewCandidates(cands []Candidate, skills config.Skills, ignore []string) []C
 		out = append(out, c)
 	}
 	return out
+}
+
+// AddAction is the action of the discovery job for one candidate.
+type AddAction int
+
+const (
+	// AddCreate creates the branch and opens a new PR.
+	AddCreate AddAction = iota
+	// AddSkipOpen skips the candidate. An open PR exists and its branch is current.
+	AddSkipOpen
+	// AddSkipClosed skips the candidate. A closed unmerged PR exists.
+	AddSkipClosed
+	// AddRebuild builds the branch of the open PR again from main and pushes it with force.
+	AddRebuild
+)
+
+// OpenPR returns the first open PR in prs, or nil.
+func OpenPR(prs []github.PR) *github.PR {
+	for i := range prs {
+		if prs[i].State == "open" {
+			return &prs[i]
+		}
+	}
+	return nil
+}
+
+// DecideAdd returns the action for a candidate. prs holds the PRs for the
+// add branch. behindBy is the number of main commits that the branch of the
+// open PR does not have. DecideAdd uses behindBy only when a PR is open.
+// It also returns the PR that the action is about, or nil for AddCreate.
+func DecideAdd(prs []github.PR, behindBy int) (AddAction, *github.PR) {
+	if pr := OpenPR(prs); pr != nil {
+		if behindBy > 0 {
+			return AddRebuild, pr
+		}
+		return AddSkipOpen, pr
+	}
+	for i := range prs {
+		if !prs[i].Merged {
+			return AddSkipClosed, &prs[i]
+		}
+	}
+	return AddCreate, nil
 }
 
 // NotesTemplate returns the first content of the notes file for a new skill.

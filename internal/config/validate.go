@@ -7,6 +7,8 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+
+	"github.com/fergalhk/agent-config/internal/naming"
 )
 
 // Validate checks the skills map against the files under root.
@@ -38,6 +40,9 @@ func Validate(root string, skills Skills) []string {
 
 	for _, name := range names {
 		skill := skills[name]
+		if !naming.ValidName(name) {
+			findings = append(findings, fmt.Sprintf("%s lists skill %q, but the name is not valid. Use only lowercase letters, digits and hyphens", SkillsPath, name))
+		}
 		if !dirs[name] {
 			findings = append(findings, fmt.Sprintf("%s lists skill %s, but skills/%s does not exist", SkillsPath, name, name))
 		}

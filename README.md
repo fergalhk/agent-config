@@ -26,7 +26,11 @@ If you close an update PR without a merge, the next run opens it again.
 
 ## Setup
 
-Add one repository secret: `ANTHROPIC_API_KEY`. The update workflows give it to Claude Code. The workflows use the built-in `GITHUB_TOKEN` for all GitHub operations.
+The workflows use the built-in `GITHUB_TOKEN` for all GitHub operations. Do these steps once for the repository:
+
+1. Add one repository secret: `ANTHROPIC_API_KEY`. The update workflows give it to Claude Code.
+2. Go to Settings → Actions → General → Workflow permissions. Select "Allow GitHub Actions to create and approve pull requests". This setting is off by default. Without it, `GITHUB_TOKEN` cannot open a pull request, and the discovery and update jobs fail.
+3. Keep the default workflow permissions as they are. Each workflow has its own `permissions` block. That block gives `GITHUB_TOKEN` the `contents: write` and `pull-requests: write` permissions. If you remove a `permissions` block, select "Read and write permissions" on the same page.
 
 ## Decline a new skill
 

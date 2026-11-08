@@ -43,6 +43,7 @@ type UpstreamRepo interface {
 	DefaultBranch(ctx context.Context) (string, error)
 	ExtractDir(ctx context.Context, sha, dir, dest string) error
 	DiffDir(ctx context.Context, old, new, dir string) (string, error)
+	DirExists(ctx context.Context, sha, dir string) (bool, error)
 }
 
 // Deps holds the dependencies of the update job.
@@ -97,6 +98,14 @@ func Run(ctx context.Context, d Deps, skill string) error {
 	if upstream == "" {
 		return fmt.Errorf("no commit changes %s in %s", source.Directory, source.Repo)
 	}
+	exists, err := up.DirExists(ctx, upstream, source.Directory)
+	if err != nil {
+		return fmt.Errorf("check %s at %s: %w", source.Directory, shortSHA(upstream), err)
+	}
+	if !exists {
+		log.Printf("%s: upstream removed %s; the fork stays as it is", skill, source.Directory)
+		return nil
+	}
 
 	branch := naming.UpdateBranch(skill)
 	pr, err := findPR(ctx, d.API, branch)
@@ -107,13 +116,15 @@ func Run(ctx context.Context, d Deps, skill string) error {
 	var branchSHA string
 	var events []activity.Event
 	// collectedAt dates the bot commit. Activity after this time counts on the next run.
+	// The commit date has second precision. So collectedAt is one second early.
+	// Then a comment in the same second counts twice and is not lost.
 	var collectedAt time.Time
 	if pr != nil {
 		branchSHA, err = readBranchSHA(ctx, d.Git, branch, skill)
 		if err != nil {
 			return err
 		}
-		collectedAt = d.Now()
+		collectedAt = d.Now().Add(-time.Second)
 		events, err = collectActivity(ctx, d.API, pr.Number)
 		if err != nil {
 			return err
@@ -134,11 +145,22 @@ func Run(ctx context.Context, d Deps, skill string) error {
 	log.Printf("%s: %s: %s", skill, outcome.Action, outcome.Reason)
 
 	// fail posts a comment on the PR, if one exists, and returns err.
+	// It does not post the comment when the newest bot comment has the same body.
 	fail := func(prefix string, err error) error {
-		if pr != nil {
-			if cerr := d.API.CreateComment(ctx, pr.Number, prefix+err.Error()); cerr != nil {
-				return errors.Join(err, fmt.Errorf("comment on PR #%d: %w", pr.Number, cerr))
-			}
+		if pr == nil {
+			return err
+		}
+		body := prefix + err.Error()
+		comments, cerr := d.API.ListIssueComments(ctx, pr.Number)
+		if cerr != nil {
+			return errors.Join(err, fmt.Errorf("list comments on PR #%d: %w", pr.Number, cerr))
+		}
+		if last, ok := newestBotComment(comments); ok && last.Body == body {
+			log.Printf("%s: the failure comment is already on PR #%d", skill, pr.Number)
+			return err
+		}
+		if cerr := d.API.CreateComment(ctx, pr.Number, body); cerr != nil {
+			return errors.Join(err, fmt.Errorf("comment on PR #%d: %w", pr.Number, cerr))
 		}
 		return err
 	}
@@ -203,7 +225,8 @@ func SkillForPR(ctx context.Context, api github.API, number int) (string, bool, 
 }
 
 // findPR returns the open PR for branch. If no PR is open, it reopens a
-// closed unmerged PR and returns it. It returns nil when no such PR exists.
+// closed unmerged PR and returns it. It returns nil when no such PR exists,
+// or when the reopen fails.
 func findPR(ctx context.Context, api github.API, branch string) (*github.PR, error) {
 	prs, err := api.FindPRs(ctx, branch)
 	if err != nil {
@@ -217,7 +240,9 @@ func findPR(ctx context.Context, api github.API, branch string) (*github.PR, err
 	for i := range prs {
 		if !prs[i].Merged {
 			if err := api.ReopenPR(ctx, prs[i].Number); err != nil {
-				return nil, fmt.Errorf("reopen PR #%d: %w", prs[i].Number, err)
+				// GitHub cannot reopen a PR when its branch is gone. Then create a new PR.
+				log.Printf("cannot reopen PR #%d: %v", prs[i].Number, err)
+				return nil, nil
 			}
 			log.Printf("reopened PR #%d", prs[i].Number)
 			prs[i].State = "open"
@@ -225,6 +250,23 @@ func findPR(ctx context.Context, api github.API, branch string) (*github.PR, err
 		}
 	}
 	return nil, nil
+}
+
+// newestBotComment returns the newest comment by the bot.
+// It returns false when the bot has no comment.
+func newestBotComment(comments []github.Comment) (github.Comment, bool) {
+	var newest github.Comment
+	found := false
+	for _, c := range comments {
+		if c.Author != gitx.BotName {
+			continue
+		}
+		if !found || !c.CreatedAt.Before(newest.CreatedAt) {
+			newest = c
+			found = true
+		}
+	}
+	return newest, found
 }
 
 // readBranchSHA reads the recorded upstream commit from the PR branch.

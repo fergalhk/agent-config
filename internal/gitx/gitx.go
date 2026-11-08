@@ -123,6 +123,15 @@ func (r *Repo) ExtractDir(ctx context.Context, sha, dir, dest string) error {
 	return errors.Join(errs...)
 }
 
+// DirExists reports whether dir is a directory at commit sha.
+func (r *Repo) DirExists(ctx context.Context, sha, dir string) (bool, error) {
+	out, err := r.Run(ctx, "ls-tree", "-d", sha, "--", strings.TrimSuffix(dir, "/"))
+	if err != nil {
+		return false, err
+	}
+	return out != "", nil
+}
+
 // DiffDir returns the diff of dir between two commits.
 func (r *Repo) DiffDir(ctx context.Context, oldSha, newSha, dir string) (string, error) {
 	return r.runRaw(ctx, "diff", oldSha, newSha, "--", dir)

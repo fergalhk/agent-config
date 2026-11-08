@@ -8,6 +8,7 @@ import (
 	"testing"
 
 	"github.com/fergalhk/agent-config/internal/config"
+	"github.com/fergalhk/agent-config/internal/github"
 )
 
 func writeTestFile(t *testing.T, path, content string) {
@@ -26,6 +27,8 @@ func TestListCandidates(t *testing.T) {
 	writeTestFile(t, filepath.Join(root, "skills/b/notes.md"), "b")
 	writeTestFile(t, filepath.Join(root, "skills/README.md"), "readme")
 	writeTestFile(t, filepath.Join(root, "skills/c/SKILL.md"), "c")
+	writeTestFile(t, filepath.Join(root, "skills/bad name/SKILL.md"), "bad")
+	writeTestFile(t, filepath.Join(root, "skills/bad#name/SKILL.md"), "bad")
 
 	var src config.ForkSource
 	src.Source.Repository = "github.com/obra/superpowers"
@@ -39,6 +42,35 @@ func TestListCandidates(t *testing.T) {
 	want := []Candidate{{Dir: "skills/a", Name: "sp-a"}, {Dir: "skills/c", Name: "sp-c"}}
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("got %v, want %v", got, want)
+	}
+}
+
+func TestDecideAdd(t *testing.T) {
+	open := github.PR{Number: 1, State: "open"}
+	closed := github.PR{Number: 2, State: "closed"}
+	merged := github.PR{Number: 3, State: "closed", Merged: true}
+	for _, tc := range []struct {
+		name     string
+		prs      []github.PR
+		behindBy int
+		want     AddAction
+		wantPR   int
+	}{
+		{"no PR", nil, 0, AddCreate, 0},
+		{"merged PR only", []github.PR{merged}, 0, AddCreate, 0},
+		{"open and current", []github.PR{open}, 0, AddSkipOpen, 1},
+		{"open and behind", []github.PR{open}, 2, AddRebuild, 1},
+		{"closed unmerged", []github.PR{closed}, 0, AddSkipClosed, 2},
+		{"open wins over closed", []github.PR{closed, open}, 1, AddRebuild, 1},
+	} {
+		got, pr := DecideAdd(tc.prs, tc.behindBy)
+		gotPR := 0
+		if pr != nil {
+			gotPR = pr.Number
+		}
+		if got != tc.want || gotPR != tc.wantPR {
+			t.Errorf("%s: got (%v, #%d), want (%v, #%d)", tc.name, got, gotPR, tc.want, tc.wantPR)
+		}
 	}
 }
 

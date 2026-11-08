@@ -28,6 +28,7 @@ type fakeAPI struct {
 	issueComments []github.Comment
 	commits       []github.Commit
 	getPR         *github.PR
+	reopenErr     error
 	compareCalls  int
 	reopened      []int
 	created       []string
@@ -51,7 +52,7 @@ func (f *fakeAPI) UpdatePR(ctx context.Context, number int, title, body string) 
 
 func (f *fakeAPI) ReopenPR(ctx context.Context, number int) error {
 	f.reopened = append(f.reopened, number)
-	return nil
+	return f.reopenErr
 }
 
 func (f *fakeAPI) ListIssueComments(ctx context.Context, number int) ([]github.Comment, error) {
@@ -143,7 +144,11 @@ func (g *fakeGit) Push(ctx context.Context, branch string, force bool) error {
 	return nil
 }
 
-type fakeUpstream struct{ head string }
+type fakeUpstream struct {
+	head string
+	// missing makes DirExists report that the directory does not exist.
+	missing bool
+}
 
 func (u *fakeUpstream) LastCommitTouching(ctx context.Context, ref, dir string) (string, error) {
 	return u.head, nil
@@ -153,6 +158,10 @@ func (u *fakeUpstream) DefaultBranch(ctx context.Context) (string, error) { retu
 
 func (u *fakeUpstream) ExtractDir(ctx context.Context, sha, dir, dest string) error {
 	return os.MkdirAll(dest, 0o755)
+}
+
+func (u *fakeUpstream) DirExists(ctx context.Context, sha, dir string) (bool, error) {
+	return !u.missing, nil
 }
 
 func (u *fakeUpstream) DiffDir(ctx context.Context, old, new, dir string) (string, error) {
@@ -184,10 +193,11 @@ func (c *fakeClaude) Run(ctx context.Context, repoDir, scratch, prompt string) e
 }
 
 type harness struct {
-	deps   Deps
-	api    *fakeAPI
-	git    *fakeGit
-	claude *fakeClaude
+	deps     Deps
+	api      *fakeAPI
+	git      *fakeGit
+	claude   *fakeClaude
+	upstream *fakeUpstream
 }
 
 func newHarness(t *testing.T, upstream string) *harness {
@@ -209,7 +219,8 @@ func newHarness(t *testing.T, upstream string) *harness {
 	api := &fakeAPI{}
 	g := &fakeGit{files: map[string]string{}}
 	c := &fakeClaude{git: g}
-	h := &harness{api: api, git: g, claude: c}
+	up := &fakeUpstream{head: upstream}
+	h := &harness{api: api, git: g, claude: c, upstream: up}
 	h.deps = Deps{
 		API: api,
 		Git: g,
@@ -217,7 +228,7 @@ func newHarness(t *testing.T, upstream string) *harness {
 			if url != "https://github.com/obra/superpowers.git" {
 				t.Errorf("upstream url = %q", url)
 			}
-			return &fakeUpstream{head: upstream}, nil
+			return up, nil
 		},
 		Claude:    c,
 		Root:      root,
@@ -294,8 +305,9 @@ func TestRun_UpdatesExistingPRWithActivity(t *testing.T) {
 	if len(h.git.checkouts) != 1 || h.git.checkouts[0] != branch+"@origin/"+branch {
 		t.Errorf("checkouts = %v", h.git.checkouts)
 	}
-	if len(h.git.commits) != 1 || !h.git.commits[0].opts.AuthorDate.Equal(t0) {
-		t.Errorf("commits = %+v, want one commit dated %s", h.git.commits, t0)
+	wantDate := t0.Add(-time.Second)
+	if len(h.git.commits) != 1 || !h.git.commits[0].opts.AuthorDate.Equal(wantDate) {
+		t.Errorf("commits = %+v, want one commit dated %s", h.git.commits, wantDate)
 	}
 	if len(h.api.updated) != 1 || len(h.api.comments) != 1 {
 		t.Errorf("updated = %v, comments = %v", h.api.updated, h.api.comments)
@@ -314,7 +326,7 @@ func TestRun_EmptyCommitWhenActivityChangesNothing(t *testing.T) {
 	if err := Run(context.Background(), h.deps, skill); err != nil {
 		t.Fatal(err)
 	}
-	want := commitCall{message: "chore: respond to activity on sp-a", opts: gitx.CommitOptions{AllowEmpty: true, AuthorDate: t0}}
+	want := commitCall{message: "chore: respond to activity on sp-a", opts: gitx.CommitOptions{AllowEmpty: true, AuthorDate: t0.Add(-time.Second)}}
 	if len(h.git.commits) != 1 || h.git.commits[0] != want {
 		t.Errorf("commits = %+v, want [%+v]", h.git.commits, want)
 	}
@@ -337,6 +349,35 @@ func TestRun_ReopensClosedPR(t *testing.T) {
 	}
 	if len(h.git.pushes) != 1 || h.git.pushes[0].force {
 		t.Errorf("pushes = %v, want one push without force", h.git.pushes)
+	}
+}
+
+func TestRun_CreatesPRWhenReopenFails(t *testing.T) {
+	h := newHarness(t, newSHA)
+	h.withPR("closed", storedSHA)
+	h.api.reopenErr = errors.New("422 branch deleted")
+	if err := Run(context.Background(), h.deps, skill); err != nil {
+		t.Fatal(err)
+	}
+	if len(h.api.reopened) != 1 {
+		t.Errorf("reopened = %v, want one attempt", h.api.reopened)
+	}
+	if len(h.git.pushes) != 1 || h.git.pushes[0] != (pushCall{branch: branch, force: true}) {
+		t.Errorf("pushes = %v, want one force push of %s", h.git.pushes, branch)
+	}
+	if len(h.api.created) != 1 || len(h.api.updated) != 0 {
+		t.Errorf("created = %v, updated = %v, want one created PR", h.api.created, h.api.updated)
+	}
+}
+
+func TestRun_StopsWhenUpstreamRemovedDir(t *testing.T) {
+	h := newHarness(t, newSHA)
+	h.upstream.missing = true
+	if err := Run(context.Background(), h.deps, skill); err != nil {
+		t.Fatal(err)
+	}
+	if len(h.claude.prompts) != 0 || len(h.git.pushes) != 0 || len(h.api.created) != 0 {
+		t.Errorf("want no work, got prompts=%d pushes=%v created=%v", len(h.claude.prompts), h.git.pushes, h.api.created)
 	}
 }
 
@@ -363,6 +404,38 @@ func TestRun_CommentsOnClaudeFailure(t *testing.T) {
 	}
 	if len(h.git.pushes) != 0 {
 		t.Errorf("pushes = %v, want none", h.git.pushes)
+	}
+}
+
+func TestRun_SkipsRepeatedFailureComment(t *testing.T) {
+	h := newHarness(t, newSHA)
+	h.withPR("open", storedSHA)
+	h.claude.err = errors.New("boom")
+	h.api.issueComments = []github.Comment{
+		{Author: gitx.BotName, Body: "The Claude step failed: boom", CreatedAt: t0.Add(-2 * time.Hour)},
+		{Author: "fergal", Body: "any news?", CreatedAt: t0.Add(-time.Hour)},
+	}
+	if err := Run(context.Background(), h.deps, skill); err == nil {
+		t.Fatal("want an error")
+	}
+	if len(h.api.comments) != 0 {
+		t.Errorf("comments = %v, want none", h.api.comments)
+	}
+}
+
+func TestRun_CommentsWhenFailureDiffers(t *testing.T) {
+	h := newHarness(t, newSHA)
+	h.withPR("open", storedSHA)
+	h.claude.err = errors.New("boom")
+	h.api.issueComments = []github.Comment{
+		{Author: gitx.BotName, Body: "The Claude step failed: boom", CreatedAt: t0.Add(-2 * time.Hour)},
+		{Author: gitx.BotName, Body: "The checks failed: x", CreatedAt: t0.Add(-time.Hour)},
+	}
+	if err := Run(context.Background(), h.deps, skill); err == nil {
+		t.Fatal("want an error")
+	}
+	if len(h.api.comments) != 1 {
+		t.Errorf("comments = %v, want one", h.api.comments)
 	}
 }
 

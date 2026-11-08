@@ -27,6 +27,13 @@ func wantOne(t *testing.T, findings []string, substr string) {
 	}
 }
 
+func TestValidate_InvalidName(t *testing.T) {
+	root := t.TempDir()
+	mkdir(t, root, "skills/Bad Name")
+	skills := Skills{"Bad Name": {Type: "first_party"}}
+	wantOne(t, Validate(root, skills), "not valid")
+}
+
 func TestValidate_Clean(t *testing.T) {
 	root := t.TempDir()
 	mkdir(t, root, "skills/a")
