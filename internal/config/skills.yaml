@@ -1,2 +1,7 @@
 # Every skill in skills/, as first_party or forked. See the skill forks design.
-{}
+sp-systematic-debugging:
+  type: forked
+  fork:
+    source:
+      repo: github.com/obra/superpowers
+      directory: skills/systematic-debugging
