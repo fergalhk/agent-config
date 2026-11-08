@@ -1,0 +1,45 @@
+name: skill-comment
+on:
+  issue_comment: { types: [created] }
+  pull_request_review: { types: [submitted] }
+  pull_request_review_comment: { types: [created] }
+permissions: { contents: write, pull-requests: write }
+jobs:
+  # resolve finds the skill for the PR. The output is empty when the PR is not an update PR.
+  resolve:
+    if: github.event.sender.login != 'github-actions[bot]' && (github.event_name != 'issue_comment' || github.event.issue.pull_request != null)
+    runs-on: ubuntu-latest
+    outputs:
+      skill: ${{ steps.skill.outputs.skill }}
+    steps:
+      - uses: actions/checkout@v4
+        with: { ref: main }
+      - uses: actions/setup-go@v5
+        with: { go-version-file: go.mod }
+      - id: skill
+        env:
+          PR_NUMBER: ${{ github.event.issue.number || github.event.pull_request.number }}
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          skill=$(go run ./internal/cmd/skillctl skill-for-pr --pr "$PR_NUMBER")
+          echo "skill=$skill" >> "$GITHUB_OUTPUT"
+  update:
+    needs: resolve
+    if: needs.resolve.outputs.skill != ''
+    runs-on: ubuntu-latest
+    concurrency: { group: "skill-update-${{ needs.resolve.outputs.skill }}", cancel-in-progress: false }
+    steps:
+      # The update job reads the stored commit from main. Review events check out the PR by default, so set the ref.
+      - uses: actions/checkout@v4
+        with: { ref: main, fetch-depth: 0 }
+      - uses: actions/setup-go@v5
+        with: { go-version-file: go.mod }
+      - uses: actions/setup-node@v4
+        with: { node-version: 20 }
+      # Claude Code 2.1.319 is the latest release on npm on 2026-11-08. Update this version by hand.
+      - run: npm install -g @anthropic-ai/claude-code@2.1.319
+      - run: go run ./internal/cmd/skillctl update --skill "$SKILL"
+        env:
+          SKILL: ${{ needs.resolve.outputs.skill }}
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}

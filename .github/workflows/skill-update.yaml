@@ -1,0 +1,53 @@
+name: skill-update
+on:
+  schedule: [{ cron: "30 * * * *" }]
+  workflow_dispatch:
+    inputs:
+      skill:
+        description: Name of one forked skill to update. Leave it empty to update all forked skills.
+        required: false
+        default: ""
+permissions: { contents: write, pull-requests: write }
+jobs:
+  plan:
+    runs-on: ubuntu-latest
+    outputs:
+      skills: ${{ steps.list.outputs.skills }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with: { go-version-file: go.mod }
+      # The skill input replaces the list of forked skills with one name.
+      - id: list
+        env:
+          SKILL: ${{ inputs.skill }}
+        run: |
+          if [ -n "$SKILL" ]; then
+            skills=$(jq -cn --arg s "$SKILL" '[$s]')
+          else
+            skills=$(go run ./internal/cmd/skillctl list-forked)
+          fi
+          echo "skills=$skills" >> "$GITHUB_OUTPUT"
+  update:
+    needs: plan
+    if: needs.plan.outputs.skills != '[]'
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        skill: ${{ fromJSON(needs.plan.outputs.skills) }}
+    concurrency: { group: "skill-update-${{ matrix.skill }}", cancel-in-progress: false }
+    steps:
+      - uses: actions/checkout@v4
+        with: { fetch-depth: 0 }
+      - uses: actions/setup-go@v5
+        with: { go-version-file: go.mod }
+      - uses: actions/setup-node@v4
+        with: { node-version: 20 }
+      # Claude Code 2.1.319 is the latest release on npm on 2026-11-08. Update this version by hand.
+      - run: npm install -g @anthropic-ai/claude-code@2.1.319
+      - run: go run ./internal/cmd/skillctl update --skill "$SKILL"
+        env:
+          SKILL: ${{ matrix.skill }}
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}

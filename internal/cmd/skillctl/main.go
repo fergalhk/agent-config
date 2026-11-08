@@ -10,14 +10,17 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"time"
 
+	"github.com/fergalhk/agent-config/internal/claude"
 	"github.com/fergalhk/agent-config/internal/config"
 	"github.com/fergalhk/agent-config/internal/discover"
 	"github.com/fergalhk/agent-config/internal/github"
 	"github.com/fergalhk/agent-config/internal/gitx"
+	"github.com/fergalhk/agent-config/internal/update"
 )
 
-const usage = "usage: skillctl <check|list-forked|discover> [--root dir]"
+const usage = "usage: skillctl <check|list-forked|discover|update|skill-for-pr> [flags]"
 
 func main() {
 	if len(os.Args) < 2 {
@@ -31,6 +34,10 @@ func main() {
 		os.Exit(listForked(os.Args[2:]))
 	case "discover":
 		os.Exit(discoverCmd(os.Args[2:]))
+	case "update":
+		os.Exit(updateCmd(os.Args[2:]))
+	case "skill-for-pr":
+		os.Exit(skillForPR(os.Args[2:]))
 	default:
 		fmt.Fprintln(os.Stderr, usage)
 		os.Exit(2)
@@ -107,6 +114,79 @@ func discoverCmd(args []string) int {
 	if err != nil {
 		fmt.Fprintln(os.Stderr, err)
 		return 1
+	}
+	return 0
+}
+
+func updateCmd(args []string) int {
+	fs := flag.NewFlagSet("update", flag.ContinueOnError)
+	root := fs.String("root", ".", "repository root")
+	skill := fs.String("skill", "", "name of the forked skill to update")
+	if err := fs.Parse(args); err != nil {
+		return 2
+	}
+	if *skill == "" {
+		fmt.Fprintln(os.Stderr, "update: --skill is required")
+		return 2
+	}
+	api, err := github.NewFromEnv()
+	if err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		return 2
+	}
+	scratch, err := os.MkdirTemp("", "skillctl-update-")
+	if err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		return 2
+	}
+	defer os.RemoveAll(scratch)
+
+	err = update.Run(context.Background(), update.Deps{
+		API: api,
+		Git: gitx.Open(*root),
+		Upstream: func(ctx context.Context, url string) (update.UpstreamRepo, error) {
+			repo, err := gitx.Clone(ctx, url, filepath.Join(scratch, "upstream"))
+			if err != nil {
+				return nil, err
+			}
+			return repo, nil
+		},
+		Claude:    claude.Runner{Bin: "claude", Timeout: 30 * time.Minute},
+		Root:      *root,
+		Scratch:   scratch,
+		RunChecks: RunChecks,
+		Now:       time.Now,
+	}, *skill)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		return 1
+	}
+	return 0
+}
+
+// skillForPR prints the skill name for an update PR. It prints nothing for other PRs.
+func skillForPR(args []string) int {
+	fs := flag.NewFlagSet("skill-for-pr", flag.ContinueOnError)
+	number := fs.Int("pr", 0, "pull request number")
+	if err := fs.Parse(args); err != nil {
+		return 2
+	}
+	if *number <= 0 {
+		fmt.Fprintln(os.Stderr, "skill-for-pr: --pr is required")
+		return 2
+	}
+	api, err := github.NewFromEnv()
+	if err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		return 2
+	}
+	name, ok, err := update.SkillForPR(context.Background(), api, *number)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		return 1
+	}
+	if ok {
+		fmt.Println(name)
 	}
 	return 0
 }
