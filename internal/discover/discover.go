@@ -147,7 +147,8 @@ func addCandidate(ctx context.Context, d Deps, upstream *gitx.Repo, ref string, 
 	if err := d.Repo.CommitAll(ctx, paths, title); err != nil {
 		return "", err
 	}
-	if err := d.Repo.Push(ctx, branch, false); err != nil {
+	// Force the push. A branch with no open or closed unmerged PR may still exist from an earlier PR.
+	if err := d.Repo.Push(ctx, branch, true); err != nil {
 		return "", err
 	}
 	body, err := PRBody(c.Name, source, sha, path.Base(c.Dir))

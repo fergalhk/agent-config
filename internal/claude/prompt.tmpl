@@ -10,7 +10,7 @@ Your task is to apply the upstream change to the fork.
 - The old upstream version is at {{.OldDir}}. It is commit {{.OldSHA}}.
 - The new upstream version is at {{.NewDir}}. It is commit {{.NewSHA}}.
 - The diff between the two upstream versions is at {{.DiffPath}}.
-{{- if .HasPR}}
+{{- if .HasActivity}}
 - The human activity on the open pull request is at {{.ActivityPath}}.
 {{- end}}
 - The result file is at {{.ResultPath}}.
@@ -28,7 +28,7 @@ The notes file ranks above the upstream change.
 ## Steps
 
 1. Read the notes file first.
-{{- if .HasPR}}
+{{- if .HasActivity}}
    Then read the human activity file.
 {{- end}}
    Follow the notes file, unless a human comment disagrees.

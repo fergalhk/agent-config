@@ -9,6 +9,7 @@ import (
 	"os"
 	"os/exec"
 	"strings"
+	"time"
 )
 
 // Identity of the bot that makes commits.
@@ -43,8 +44,17 @@ func Clone(ctx context.Context, url, dir string) (*Repo, error) {
 
 // runRaw runs git in the repository and returns stdout without any change.
 func (r *Repo) runRaw(ctx context.Context, args ...string) (string, error) {
+	return r.runEnv(ctx, nil, args...)
+}
+
+// runEnv runs git with extra environment variables, in KEY=value form.
+// It returns stdout without any change.
+func (r *Repo) runEnv(ctx context.Context, env []string, args ...string) (string, error) {
 	full := append([]string{"-C", r.Dir}, args...)
 	cmd := exec.CommandContext(ctx, "git", full...)
+	if len(env) > 0 {
+		cmd.Env = append(os.Environ(), env...)
+	}
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout = &stdout
 	cmd.Stderr = &stderr
@@ -138,25 +148,50 @@ func (r *Repo) ChangedPaths(ctx context.Context) ([]string, error) {
 	return ParseStatusPorcelain(out), nil
 }
 
+// CommitOptions changes how CommitWith makes a commit.
+type CommitOptions struct {
+	// AllowEmpty makes a commit when the index is clean.
+	AllowEmpty bool
+	// AuthorDate sets the author date of the commit. The zero value uses the current time.
+	AuthorDate time.Time
+}
+
 // CommitAll stages paths and commits them as the bot.
 // It returns ErrNothingToCommit when the index is clean.
 func (r *Repo) CommitAll(ctx context.Context, paths []string, message string) error {
+	return r.CommitWith(ctx, paths, message, CommitOptions{})
+}
+
+// CommitWith stages paths and commits them as the bot with the given options.
+// It returns ErrNothingToCommit when the index is clean and AllowEmpty is false.
+func (r *Repo) CommitWith(ctx context.Context, paths []string, message string, opts CommitOptions) error {
 	if _, err := r.Run(ctx, append([]string{"add", "-A", "--"}, paths...)...); err != nil {
 		return err
 	}
-	_, err := r.Run(ctx, "diff", "--cached", "--quiet")
-	if err == nil {
-		return ErrNothingToCommit
+	if !opts.AllowEmpty {
+		_, err := r.Run(ctx, "diff", "--cached", "--quiet")
+		if err == nil {
+			return ErrNothingToCommit
+		}
+		// Exit code 1 means the index has changes. Any other failure is a real error.
+		var exitErr *exec.ExitError
+		if !errors.As(err, &exitErr) || exitErr.ExitCode() != 1 {
+			return err
+		}
 	}
-	// Exit code 1 means the index has changes. Any other failure is a real error.
-	var exitErr *exec.ExitError
-	if !errors.As(err, &exitErr) || exitErr.ExitCode() != 1 {
-		return err
+	args := []string{
+		"-c", "user.name=" + BotName,
+		"-c", "user.email=" + BotEmail,
+		"commit", "-m", message,
 	}
-	_, err = r.Run(ctx,
-		"-c", "user.name="+BotName,
-		"-c", "user.email="+BotEmail,
-		"commit", "-m", message)
+	if opts.AllowEmpty {
+		args = append(args, "--allow-empty")
+	}
+	var env []string
+	if !opts.AuthorDate.IsZero() {
+		env = []string{"GIT_AUTHOR_DATE=" + opts.AuthorDate.Format(time.RFC3339)}
+	}
+	_, err := r.runEnv(ctx, env, args...)
 	return err
 }
 

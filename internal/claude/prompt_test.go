@@ -51,14 +51,14 @@ func TestBuildPrompt_Activity(t *testing.T) {
 		t.Fatal(err)
 	}
 	if strings.Contains(out, d.ActivityPath) {
-		t.Error("prompt mentions activity file without a PR")
+		t.Error("prompt mentions activity file without activity")
 	}
-	d.HasPR = true
+	d.HasActivity = true
 	out, err = BuildPrompt(d)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if !strings.Contains(out, d.ActivityPath) {
-		t.Error("prompt lacks activity file with a PR")
+		t.Error("prompt lacks activity file with activity")
 	}
 }

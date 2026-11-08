@@ -93,12 +93,24 @@ func (f *fakeAPI) UpdatePullRequestBranch(ctx context.Context, nodeID string) er
 	return errors.New("not used")
 }
 
+type commitCall struct {
+	message string
+	opts    gitx.CommitOptions
+}
+
+type pushCall struct {
+	branch string
+	force  bool
+}
+
 type fakeGit struct {
 	files     map[string]string
 	changed   []string
 	checkouts []string
-	commits   []string
-	pushes    []string
+	commits   []commitCall
+	pushes    []pushCall
+	// nothingToCommit makes a commit that is not empty return ErrNothingToCommit.
+	nothingToCommit bool
 }
 
 func (g *fakeGit) Fetch(ctx context.Context) error { return nil }
@@ -118,13 +130,16 @@ func (g *fakeGit) CheckoutNewBranch(ctx context.Context, branch, startPoint stri
 
 func (g *fakeGit) ChangedPaths(ctx context.Context) ([]string, error) { return g.changed, nil }
 
-func (g *fakeGit) CommitAll(ctx context.Context, paths []string, message string) error {
-	g.commits = append(g.commits, message)
+func (g *fakeGit) CommitWith(ctx context.Context, paths []string, message string, opts gitx.CommitOptions) error {
+	if g.nothingToCommit && !opts.AllowEmpty {
+		return gitx.ErrNothingToCommit
+	}
+	g.commits = append(g.commits, commitCall{message: message, opts: opts})
 	return nil
 }
 
 func (g *fakeGit) Push(ctx context.Context, branch string, force bool) error {
-	g.pushes = append(g.pushes, branch)
+	g.pushes = append(g.pushes, pushCall{branch: branch, force: force})
 	return nil
 }
 
@@ -249,8 +264,8 @@ func TestRun_CreatesPROnNewUpstream(t *testing.T) {
 	if len(h.git.checkouts) != 1 || h.git.checkouts[0] != branch+"@origin/main" {
 		t.Errorf("checkouts = %v", h.git.checkouts)
 	}
-	if len(h.git.pushes) != 1 || h.git.pushes[0] != branch {
-		t.Errorf("pushes = %v, want [%s]", h.git.pushes, branch)
+	if len(h.git.pushes) != 1 || h.git.pushes[0] != (pushCall{branch: branch, force: true}) {
+		t.Errorf("pushes = %v, want one force push of %s", h.git.pushes, branch)
 	}
 	if len(h.api.created) != 1 || h.api.created[0] != "chore: apply upstream" {
 		t.Errorf("created = %v", h.api.created)
@@ -279,11 +294,32 @@ func TestRun_UpdatesExistingPRWithActivity(t *testing.T) {
 	if len(h.git.checkouts) != 1 || h.git.checkouts[0] != branch+"@origin/"+branch {
 		t.Errorf("checkouts = %v", h.git.checkouts)
 	}
+	if len(h.git.commits) != 1 || !h.git.commits[0].opts.AuthorDate.Equal(t0) {
+		t.Errorf("commits = %+v, want one commit dated %s", h.git.commits, t0)
+	}
 	if len(h.api.updated) != 1 || len(h.api.comments) != 1 {
 		t.Errorf("updated = %v, comments = %v", h.api.updated, h.api.comments)
 	}
 	if len(h.api.created) != 0 {
 		t.Errorf("created = %v, want none", h.api.created)
+	}
+}
+
+func TestRun_EmptyCommitWhenActivityChangesNothing(t *testing.T) {
+	h := newHarness(t, newSHA)
+	h.withPR("open", newSHA)
+	h.git.nothingToCommit = true
+	h.api.commits = []github.Commit{{SHA: "c1", AuthorLogin: gitx.BotName, AuthorDate: t0}}
+	h.api.issueComments = []github.Comment{{Author: "fergal", Body: "why?", CreatedAt: t0.Add(time.Hour)}}
+	if err := Run(context.Background(), h.deps, skill); err != nil {
+		t.Fatal(err)
+	}
+	want := commitCall{message: "chore: respond to activity on sp-a", opts: gitx.CommitOptions{AllowEmpty: true, AuthorDate: t0}}
+	if len(h.git.commits) != 1 || h.git.commits[0] != want {
+		t.Errorf("commits = %+v, want [%+v]", h.git.commits, want)
+	}
+	if len(h.git.pushes) != 1 {
+		t.Errorf("pushes = %v, want one push", h.git.pushes)
 	}
 }
 
@@ -299,8 +335,8 @@ func TestRun_ReopensClosedPR(t *testing.T) {
 	if len(h.api.updated) != 1 || len(h.api.created) != 0 {
 		t.Errorf("updated = %v, created = %v", h.api.updated, h.api.created)
 	}
-	if len(h.git.pushes) != 1 {
-		t.Errorf("pushes = %v", h.git.pushes)
+	if len(h.git.pushes) != 1 || h.git.pushes[0].force {
+		t.Errorf("pushes = %v, want one push without force", h.git.pushes)
 	}
 }
 

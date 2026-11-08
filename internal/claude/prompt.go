@@ -28,7 +28,8 @@ type PromptData struct {
 	ResultPath   string
 	OldSHA       string
 	NewSHA       string
-	HasPR        bool
+	// HasActivity is true when the activity file exists.
+	HasActivity bool
 	// Date is today's date in the form YYYY-MM-DD.
 	Date string
 }

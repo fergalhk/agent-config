@@ -8,6 +8,7 @@ on:
         required: false
         default: ""
 permissions: { contents: write, pull-requests: write }
+# Each job checks out main. The update job reads the stored commit from main, also for a workflow_dispatch from another branch.
 jobs:
   plan:
     runs-on: ubuntu-latest
@@ -15,6 +16,7 @@ jobs:
       skills: ${{ steps.list.outputs.skills }}
     steps:
       - uses: actions/checkout@v4
+        with: { ref: main }
       - uses: actions/setup-go@v5
         with: { go-version-file: go.mod }
       # The skill input replaces the list of forked skills with one name.
@@ -39,7 +41,7 @@ jobs:
     concurrency: { group: "skill-update-${{ matrix.skill }}", cancel-in-progress: false }
     steps:
       - uses: actions/checkout@v4
-        with: { fetch-depth: 0 }
+        with: { ref: main, fetch-depth: 0 }
       - uses: actions/setup-go@v5
         with: { go-version-file: go.mod }
       - uses: actions/setup-node@v4

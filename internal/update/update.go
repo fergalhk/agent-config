@@ -33,7 +33,7 @@ type Git interface {
 	ShowFile(ctx context.Context, ref, path string) (string, error)
 	CheckoutNewBranch(ctx context.Context, branch, startPoint string) error
 	ChangedPaths(ctx context.Context) ([]string, error)
-	CommitAll(ctx context.Context, paths []string, message string) error
+	CommitWith(ctx context.Context, paths []string, message string, opts gitx.CommitOptions) error
 	Push(ctx context.Context, branch string, force bool) error
 }
 
@@ -106,11 +106,14 @@ func Run(ctx context.Context, d Deps, skill string) error {
 
 	var branchSHA string
 	var events []activity.Event
+	// collectedAt dates the bot commit. Activity after this time counts on the next run.
+	var collectedAt time.Time
 	if pr != nil {
 		branchSHA, err = readBranchSHA(ctx, d.Git, branch, skill)
 		if err != nil {
 			return err
 		}
+		collectedAt = d.Now()
 		events, err = collectActivity(ctx, d.API, pr.Number)
 		if err != nil {
 			return err
@@ -154,18 +157,19 @@ func Run(ctx context.Context, d Deps, skill string) error {
 		return err
 	}
 
-	result, err := runClaude(ctx, d, skill, source, outcome.OldSHA, upstream, pr != nil, events, up)
+	result, err := runClaude(ctx, d, skill, source, outcome.OldSHA, upstream, events, up)
 	if err != nil {
 		return fail("The Claude step failed: ", err)
 	}
 
-	if err := commit(ctx, d, skill, upstream, branchSHA); err != nil {
+	if err := commit(ctx, d, skill, upstream, branchSHA, collectedAt); err != nil {
 		return err
 	}
 	if err := d.RunChecks(d.Root); err != nil {
 		return fail("The checks failed: ", err)
 	}
-	if err := d.Git.Push(ctx, branch, false); err != nil {
+	// With no PR, force the push. The branch may still exist from an earlier PR.
+	if err := d.Git.Push(ctx, branch, pr == nil); err != nil {
 		return err
 	}
 
@@ -259,7 +263,7 @@ func collectActivity(ctx context.Context, api github.API, number int) ([]activit
 
 // runClaude writes the job files to the scratch directory, runs Claude Code,
 // reads the result file and checks the changed paths.
-func runClaude(ctx context.Context, d Deps, skill string, source config.Source, oldSHA, newSHA string, hasPR bool, events []activity.Event, up UpstreamRepo) (claude.Result, error) {
+func runClaude(ctx context.Context, d Deps, skill string, source config.Source, oldSHA, newSHA string, events []activity.Event, up UpstreamRepo) (claude.Result, error) {
 	oldDir := filepath.Join(d.Scratch, "old")
 	newDir := filepath.Join(d.Scratch, "new")
 	diffPath := filepath.Join(d.Scratch, "diff.patch")
@@ -297,9 +301,8 @@ func runClaude(ctx context.Context, d Deps, skill string, source config.Source, 
 		ResultPath:   resultPath,
 		OldSHA:       oldSHA,
 		NewSHA:       newSHA,
-		// The prompt names the activity file only when the file exists.
-		HasPR: hasPR && len(events) > 0,
-		Date:  d.Now().Format("2006-01-02"),
+		HasActivity:  len(events) > 0,
+		Date:         d.Now().Format("2006-01-02"),
 	})
 	if err != nil {
 		return claude.Result{}, err
@@ -329,20 +332,24 @@ func runClaude(ctx context.Context, d Deps, skill string, source config.Source, 
 }
 
 // commit writes the upstream commit to the sha file and commits the skill files.
-// A commit with no changes is valid only when the branch already records upstream.
-func commit(ctx context.Context, d Deps, skill, upstream, branchSHA string) error {
+// The commit has the author date at. When the branch already records upstream
+// and nothing changed, the run answers activity only. Then commit makes an
+// empty commit, so that the next run does not count the same activity again.
+func commit(ctx context.Context, d Deps, skill, upstream, branchSHA string, at time.Time) error {
 	shaFile := filepath.Join(d.Root, config.ShaPath(skill))
 	if err := os.WriteFile(shaFile, []byte(upstream+"\n"), 0o644); err != nil {
 		return err
 	}
 	paths := []string{"skills/" + skill, discover.NotesPath(skill), "internal/forked-skills/" + skill}
 	message := fmt.Sprintf("chore: update %s to upstream %s", skill, shortSHA(upstream))
-	err := d.Git.CommitAll(ctx, paths, message)
-	if errors.Is(err, gitx.ErrNothingToCommit) && branchSHA == upstream {
-		log.Printf("%s: no changes to commit", skill)
-		return nil
+	opts := gitx.CommitOptions{AuthorDate: at}
+	err := d.Git.CommitWith(ctx, paths, message, opts)
+	if !errors.Is(err, gitx.ErrNothingToCommit) || branchSHA != upstream {
+		return err
 	}
-	return err
+	log.Printf("%s: no changes, make an empty commit", skill)
+	opts.AllowEmpty = true
+	return d.Git.CommitWith(ctx, paths, "chore: respond to activity on "+skill, opts)
 }
 
 // shortSHA returns the first 7 characters of sha.
