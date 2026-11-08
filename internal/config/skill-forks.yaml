@@ -1,0 +1,5 @@
+- source:
+    repository: github.com/obra/superpowers
+    directory: skills/
+  prefix: sp-
+  ignore: []
