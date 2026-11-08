@@ -32,7 +32,7 @@ func Open(dir string) *Repo {
 
 // Clone makes a full clone of url in dir.
 func Clone(ctx context.Context, url, dir string) (*Repo, error) {
-	cmd := exec.CommandContext(ctx, "git", "clone", url, dir)
+	cmd := exec.CommandContext(ctx, "git", "clone", "--", url, dir)
 	var stderr bytes.Buffer
 	cmd.Stderr = &stderr
 	if err := cmd.Run(); err != nil {
@@ -100,24 +100,27 @@ func (r *Repo) ExtractDir(ctx context.Context, sha, dir, dest string) error {
 		return fmt.Errorf("tar: %w", err)
 	}
 	extractWaitErr := extract.Wait()
+	// Close the read end so that git archive gets a broken pipe if tar stopped early.
+	_ = pipe.Close()
 	archiveWaitErr := archive.Wait()
-	if archiveWaitErr != nil {
-		return fmt.Errorf("git archive %s %s: %w: %s", sha, dir, archiveWaitErr, strings.TrimSpace(archiveErr.String()))
-	}
+	var errs []error
 	if extractWaitErr != nil {
-		return fmt.Errorf("tar extract: %w: %s", extractWaitErr, strings.TrimSpace(extractErr.String()))
+		errs = append(errs, fmt.Errorf("tar extract: %w: %s", extractWaitErr, strings.TrimSpace(extractErr.String())))
 	}
-	return nil
+	if archiveWaitErr != nil {
+		errs = append(errs, fmt.Errorf("git archive %s %s: %w: %s", sha, dir, archiveWaitErr, strings.TrimSpace(archiveErr.String())))
+	}
+	return errors.Join(errs...)
 }
 
 // DiffDir returns the diff of dir between two commits.
 func (r *Repo) DiffDir(ctx context.Context, oldSha, newSha, dir string) (string, error) {
-	return r.Run(ctx, "diff", oldSha, newSha, "--", dir)
+	return r.runRaw(ctx, "diff", oldSha, newSha, "--", dir)
 }
 
 // ShowFile returns the content of path at ref.
 func (r *Repo) ShowFile(ctx context.Context, ref, path string) (string, error) {
-	return r.Run(ctx, "show", ref+":"+path)
+	return r.runRaw(ctx, "show", ref+":"+path)
 }
 
 // CheckoutNewBranch creates branch at startPoint, or resets it, and checks it out.
